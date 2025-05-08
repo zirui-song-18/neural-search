@@ -28,11 +28,9 @@ import org.opensearch.neuralsearch.sparse.common.InMemoryKey;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -44,6 +42,20 @@ public class InMemoryClusteredPosting implements Accountable {
 
     public static void clearIndex(InMemoryKey.IndexKey key) {
         inMemoryPostings.remove(key);
+    }
+
+    static final int MAX_FREQ = Float.floatToIntBits(Float.MAX_VALUE) >>> 15;
+
+    static float decodeFeatureValue(float freq) {
+        if (freq > MAX_FREQ) {
+            // This is never used in practice but callers of the SimScorer API might
+            // occasionally call it on eg. Float.MAX_VALUE to compute the max score
+            // so we need to be consistent.
+            return Float.MAX_VALUE;
+        }
+        int tf = (int) freq; // lossless
+        int featureBits = tf << 15;
+        return Float.intBitsToFloat(featureBits);
     }
 
     @Override
@@ -69,12 +81,9 @@ public class InMemoryClusteredPosting implements Accountable {
 
         public Set<BytesRef> getTerms() {
             Map<BytesRef, PostingClusters> innerMap = inMemoryPostings.get(key);
-            if (innerMap == null) {
-                return Collections.emptySet();
-            }
-            // Create an unmodifiable copy of the keySet to ensure thread-safety
-            return Collections.unmodifiableSet(new HashSet<>(innerMap.keySet()));
+            return innerMap != null ? innerMap.keySet() : Collections.emptySet();
         }
+
     }
 
     public static class InMemoryClusteredPostingWriter extends PushPostingsWriterBase {
@@ -114,7 +123,7 @@ public class InMemoryClusteredPosting implements Accountable {
 
             inMemoryPostings.compute(key, (k, existingMap) -> {
                 if (existingMap == null) {
-                    existingMap = new TreeMap<>();
+                    existingMap = new ConcurrentHashMap<>();
                 }
                 existingMap.put(term.clone(), new PostingClusters(clusters));
                 return existingMap;
@@ -131,7 +140,10 @@ public class InMemoryClusteredPosting implements Accountable {
 
         @Override
         public void startDoc(int docID, int freq) throws IOException {
-            docFreqs.add(new DocFreq(docID, freq));
+            if (docID == -1) {
+                throw new IllegalStateException("docId must be set before startDoc");
+            }
+            docFreqs.add(new DocFreq(docID, decodeFeatureValue(freq)));
         }
 
         @Override

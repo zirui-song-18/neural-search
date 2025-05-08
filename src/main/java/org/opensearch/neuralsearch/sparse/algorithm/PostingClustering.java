@@ -16,13 +16,15 @@ import java.util.List;
  */
 public class PostingClustering {
 
-    final static int MINIMAL_DOC_SIZE_OF_CLUSTER = 10;
+    private final static int MINIMAL_DOC_SIZE_TO_CLUSTER = 10;
     private final int lambda;
     private final Clustering clustering;
+    private final int beta;
 
-    public PostingClustering(int lambda, Clustering clustering) {
+    public PostingClustering(int lambda, Clustering clustering, int beta) {
         this.lambda = lambda;
         this.clustering = clustering;
+        this.beta = beta;
     }
 
     private List<DocFreq> preprocess(List<DocFreq> postings) {
@@ -35,7 +37,7 @@ public class PostingClustering {
         if (preprocessed.isEmpty()) {
             return new ArrayList<>();
         }
-        if (preprocessed.size() < MINIMAL_DOC_SIZE_OF_CLUSTER) {
+        if (preprocessed.size() < MINIMAL_DOC_SIZE_TO_CLUSTER) {
             return Collections.singletonList(new DocumentCluster(null, preprocessed, true));
         }
         return clustering.cluster(preprocessed);
