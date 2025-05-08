@@ -8,8 +8,11 @@ import lombok.AllArgsConstructor;
 import org.opensearch.neuralsearch.sparse.common.DocFreq;
 import org.opensearch.neuralsearch.sparse.common.SparseVector;
 import org.opensearch.neuralsearch.sparse.common.SparseVectorReader;
+import org.opensearch.neuralsearch.sparse.common.IteratorWrapper;
+import org.opensearch.neuralsearch.sparse.common.SparseVector.Item;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -42,26 +45,65 @@ public class KMeansPlusPlus implements Clustering {
         List<float[]> denseCentroids,
         List<Integer> clusterIds
     ) {
+        int numClusters = clusterIds.size();
+        int maxFeatureDimension = 0;
+        for (int clusterId : clusterIds) {
+            maxFeatureDimension = Math.max(maxFeatureDimension, denseCentroids.get(clusterId).length);
+        }
+
+        float[][] transposedCenters = new float[maxFeatureDimension][numClusters];
+
+        int clusterIndex = 0;
+        for (int clusterId : clusterIds) {
+            float[] center = denseCentroids.get(clusterId);
+            for (int featureIndex = 0; featureIndex < center.length; featureIndex++) {
+                transposedCenters[featureIndex][clusterIndex] = center[featureIndex];
+            }
+            clusterIndex++;
+        }
+        float[] similarities = new float[numClusters];
+
+        Arrays.fill(similarities, 0.0f);
 
         for (DocFreq docFreq : documents) {
             SparseVector docVector = reader.read(docFreq.getDocID());
             if (docVector == null) {
                 continue;
             }
+            IteratorWrapper<Item> iterator = docVector.iterator();
+            while (iterator.hasNext()) {
+                Item item = iterator.next();
+                int tokenIndex = item.getToken();
+                float tokenValue = item.getFreq();
 
-            int bestCluster = 0;
-            float maxScore = Float.MIN_VALUE;
+                // 确保索引在范围内
+                if (tokenIndex < transposedCenters.length) {
+                    float[] featureClusterValues = transposedCenters[tokenIndex];
 
-            for (int clusterId : clusterIds) {
-                float[] center = denseCentroids.get(clusterId);
-                if (center != null) {
-                    float score = docVector.dotProduct(center);
-                    if (score > maxScore) {
-                        maxScore = score;
-                        bestCluster = clusterId;
+                    // 对每个聚类，累加该特征的贡献
+                    for (int j = 0; j < Math.min(numClusters, featureClusterValues.length); j++) {
+                        similarities[j] += tokenValue * featureClusterValues[j];
                     }
                 }
             }
+            int bestCluster = 0;
+            for (int i = 1; i < similarities.length; i++) {
+                if (similarities[i] > similarities[bestCluster]) {
+                    bestCluster = i;
+                }
+            }
+            // float maxScore = Float.MIN_VALUE;
+            //
+            // for (int clusterId : clusterIds) {
+            // float[] center = denseCentroids.get(clusterId);
+            // if (center != null) {
+            // float score = docVector.dotProduct(center);
+            // if (score > maxScore) {
+            // maxScore = score;
+            // bestCluster = clusterId;
+            // }
+            // }
+            // }
 
             docAssignments.get(bestCluster).add(docFreq);
         }
