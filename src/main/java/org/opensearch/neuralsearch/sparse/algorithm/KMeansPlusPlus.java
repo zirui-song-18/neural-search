@@ -18,7 +18,8 @@ import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import org.apache.commons.math3.linear.ArrayRealVector;
+import static org.apache.lucene.util.VectorUtil.add;
+
 /**
  * KMeans++ clustering algorithm
  */
@@ -45,23 +46,40 @@ public class KMeansPlusPlus implements Clustering {
         List<float[]> denseCentroids,
         List<Integer> clusterIds
     ) {
+        long startTimeTotal = System.nanoTime();
         int numClusters = clusterIds.size();
         int maxFeatureDimension = 0;
+        long startTimeStep1 = System.nanoTime();
         for (float[] centroid : denseCentroids) {
             maxFeatureDimension = Math.max(maxFeatureDimension, centroid.length);
         }
+        long endTimeStep1 = System.nanoTime();
+        System.out.println("步骤1 - 找出最大特征维度: " + (endTimeStep1 - startTimeStep1) / 1_000_000.0 + " ms");
 
         float[][] transposedCenters = new float[maxFeatureDimension][numClusters];
+        long startTimeStep2 = System.nanoTime();
+        // for (int i = 0; i < clusterIds.size(); i++) {
+        // float[] center = denseCentroids.get(clusterIds.get(i));
+        // for (int featureIndex = 0; featureIndex < center.length; featureIndex++) {
+        // transposedCenters[featureIndex][i] = center[featureIndex];
+        // }
+        // }
+        float[] flatTransposedCenters = new float[maxFeatureDimension * numClusters];
+        int size = clusterIds.size();
 
-        for (int i = 0; i < clusterIds.size(); i++) {
+        for (int i = 0; i < size; i++) {
             float[] center = denseCentroids.get(clusterIds.get(i));
-            for (int featureIndex = 0; featureIndex < center.length; featureIndex++) {
-                transposedCenters[featureIndex][i] = center[featureIndex];
+            int centerLength = center.length;
+
+            for (int featureIndex = 0; featureIndex < centerLength; featureIndex++) {
+                flatTransposedCenters[featureIndex * numClusters + i] = center[featureIndex];
             }
         }
+        long endTimeStep2 = System.nanoTime();
+        System.out.println("步骤2 - 转置中心点: " + (endTimeStep2 - startTimeStep2) / 1_000_000.0 + " ms");
 
         float[] similarities = new float[numClusters];
-
+        long startTimeStep3 = System.nanoTime();
         for (DocFreq docFreq : documents) {
             Arrays.fill(similarities, 0.0f);
 
@@ -70,6 +88,7 @@ public class KMeansPlusPlus implements Clustering {
                 continue;
             }
             IteratorWrapper<Item> iterator = docVector.iterator();
+            float[] scaledFeatureValues = new float[numClusters];
             while (iterator.hasNext()) {
                 Item item = iterator.next();
                 int tokenIndex = item.getToken();
@@ -78,10 +97,10 @@ public class KMeansPlusPlus implements Clustering {
                 if (tokenIndex < transposedCenters.length) {
                     float[] featureClusterValues = transposedCenters[tokenIndex];
 
-                    // 累加到相似度向量
-                    for (int j = 0; j < numClusters; j++) {
-                        similarities[j] += tokenValue * featureClusterValues[j];
-                    }
+                    System.arraycopy(featureClusterValues, 0, scaledFeatureValues, 0, numClusters);
+
+                    scaleVector(scaledFeatureValues, tokenValue);
+                    add(similarities, scaledFeatureValues);
                 }
             }
 
@@ -95,6 +114,37 @@ public class KMeansPlusPlus implements Clustering {
 
             docAssignments.get(bestCluster).add(docFreq);
         }
+        long endTimeStep3 = System.nanoTime();
+        System.out.println("步骤3 - 文档分配 (总计): " + (endTimeStep3 - startTimeStep3) / 1_000_000.0 + " ms");
+
+        // 总时间
+        long endTimeTotal = System.nanoTime();
+        System.out.println("总执行时间: " + (endTimeTotal - startTimeTotal) / 1_000_000.0 + " ms");
+    }
+
+    private float[] scaleVector(float[] vector, float scalar) {
+        // 使用循环展开技术
+        int i = 0;
+        int length = vector.length;
+
+        // 每次处理4个元素
+        for (; i <= length - 8; i += 8) {
+            vector[i] *= scalar;
+            vector[i + 1] *= scalar;
+            vector[i + 2] *= scalar;
+            vector[i + 3] *= scalar;
+            vector[i + 4] *= scalar;
+            vector[i + 5] *= scalar;
+            vector[i + 6] *= scalar;
+            vector[i + 7] *= scalar;
+        }
+
+        // 处理剩余元素
+        for (; i < length; i++) {
+            vector[i] *= scalar;
+        }
+
+        return vector;  // 返回同一个数组的引用
     }
 
     @Override
