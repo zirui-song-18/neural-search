@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-
+import org.apache.commons.math3.linear.ArrayRealVector;
 /**
  * KMeans++ clustering algorithm
  */
@@ -47,25 +47,24 @@ public class KMeansPlusPlus implements Clustering {
     ) {
         int numClusters = clusterIds.size();
         int maxFeatureDimension = 0;
-        for (int clusterId : clusterIds) {
-            maxFeatureDimension = Math.max(maxFeatureDimension, denseCentroids.get(clusterId).length);
+        for (float[] centroid : denseCentroids) {
+            maxFeatureDimension = Math.max(maxFeatureDimension, centroid.length);
         }
 
         float[][] transposedCenters = new float[maxFeatureDimension][numClusters];
 
-        int clusterIndex = 0;
-        for (int clusterId : clusterIds) {
-            float[] center = denseCentroids.get(clusterId);
+        for (int i = 0; i < clusterIds.size(); i++) {
+            float[] center = denseCentroids.get(clusterIds.get(i));
             for (int featureIndex = 0; featureIndex < center.length; featureIndex++) {
-                transposedCenters[featureIndex][clusterIndex] = center[featureIndex];
+                transposedCenters[featureIndex][i] = center[featureIndex];
             }
-            clusterIndex++;
         }
+
         float[] similarities = new float[numClusters];
 
-        Arrays.fill(similarities, 0.0f);
-
         for (DocFreq docFreq : documents) {
+            Arrays.fill(similarities, 0.0f);
+
             SparseVector docVector = reader.read(docFreq.getDocID());
             if (docVector == null) {
                 continue;
@@ -76,34 +75,23 @@ public class KMeansPlusPlus implements Clustering {
                 int tokenIndex = item.getToken();
                 float tokenValue = item.getFreq();
 
-                // 确保索引在范围内
                 if (tokenIndex < transposedCenters.length) {
                     float[] featureClusterValues = transposedCenters[tokenIndex];
 
-                    // 对每个聚类，累加该特征的贡献
-                    for (int j = 0; j < Math.min(numClusters, featureClusterValues.length); j++) {
+                    // 累加到相似度向量
+                    for (int j = 0; j < numClusters; j++) {
                         similarities[j] += tokenValue * featureClusterValues[j];
                     }
                 }
             }
+
+            // 找出最相似的聚类
             int bestCluster = 0;
             for (int i = 1; i < similarities.length; i++) {
                 if (similarities[i] > similarities[bestCluster]) {
                     bestCluster = i;
                 }
             }
-            // float maxScore = Float.MIN_VALUE;
-            //
-            // for (int clusterId : clusterIds) {
-            // float[] center = denseCentroids.get(clusterId);
-            // if (center != null) {
-            // float score = docVector.dotProduct(center);
-            // if (score > maxScore) {
-            // maxScore = score;
-            // bestCluster = clusterId;
-            // }
-            // }
-            // }
 
             docAssignments.get(bestCluster).add(docFreq);
         }
