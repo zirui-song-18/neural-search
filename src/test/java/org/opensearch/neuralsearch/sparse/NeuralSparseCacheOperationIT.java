@@ -24,7 +24,7 @@ import static org.opensearch.neuralsearch.util.TestUtils.DELTA_FOR_SCORE_ASSERTI
  * Integration tests for neural sparse cache operations (warm up and clear cache)
  */
 public class NeuralSparseCacheOperationIT extends SparseBaseIT {
-
+    
     private static final String TEST_INDEX_NAME = "test-sparse-cache-index";
     private static final String TEST_TEXT_FIELD_NAME = "text";
     private static final String TEST_SPARSE_FIELD_NAME = "sparse_field";
