@@ -14,6 +14,7 @@ import org.opensearch.neuralsearch.sparse.TestsPrepareUtils;
 
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -26,7 +27,7 @@ public class ForwardIndexCacheTests extends AbstractSparseTestBase {
 
     private long emptyForwardIndexCacheSize;
     private long emptyForwardIndexCacheItemSize;
-    private ForwardIndexCache forwardIndexCache;
+    private TestForwardIndexCache forwardIndexCache;
 
     /**
      * Set up the test environment before each test.
@@ -37,11 +38,10 @@ public class ForwardIndexCacheTests extends AbstractSparseTestBase {
     @SneakyThrows
     public void setUp() {
         super.setUp();
-
-        forwardIndexCache = ForwardIndexCache.getInstance();
+        forwardIndexCache = new TestForwardIndexCache();
         emptyForwardIndexCacheSize = forwardIndexCache.ramBytesUsed();
         RamBytesRecorder mockGlobalRecorder = mock(RamBytesRecorder.class);
-        CacheKey cacheKey = new CacheKey(TestsPrepareUtils.prepareSegmentInfo(), TestsPrepareUtils.prepareKeyFieldInfo());
+        CacheKey cacheKey = prepareUniqueCacheKey(TestsPrepareUtils.prepareSegmentInfo());
         emptyForwardIndexCacheItemSize = new ForwardIndexCacheItem(cacheKey, TEST_DOC_COUNT, mockGlobalRecorder).ramBytesUsed();
     }
 
@@ -84,9 +84,16 @@ public class ForwardIndexCacheTests extends AbstractSparseTestBase {
         assertEquals(ramBytesUsed, emptyForwardIndexCacheSize + emptyForwardIndexCacheItemSize + cacheKeySize);
 
         // Capture the arguments passed to addWithoutBreaking
-        ArgumentCaptor<Long> argumentCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(mockedCircuitBreaker, atLeastOnce()).addWithoutBreaking(argumentCaptor.capture());
-        List<Long> capturedValues = argumentCaptor.getAllValues();
+        ArgumentCaptor<Long> argumentCaptor1 = ArgumentCaptor.forClass(Long.class);
+        verify(mockedCircuitBreaker, atLeastOnce()).addWithoutBreaking(argumentCaptor1.capture());
+        List<Long> capturedValues = argumentCaptor1.getAllValues();
+        assertTrue(capturedValues.contains(emptyForwardIndexCacheItemSize));
+        assertTrue(capturedValues.contains(cacheKeySize));
+
+        // Capture the arguments passed to recordWithoutValidation
+        ArgumentCaptor<Long> argumentCaptor2 = ArgumentCaptor.forClass(Long.class);
+        verify(mockedMemoryUsageTracker, atLeastOnce()).recordWithoutValidation(argumentCaptor2.capture(), any());
+        capturedValues = argumentCaptor2.getAllValues();
         assertTrue(capturedValues.contains(emptyForwardIndexCacheItemSize));
         assertTrue(capturedValues.contains(cacheKeySize));
     }
@@ -117,5 +124,11 @@ public class ForwardIndexCacheTests extends AbstractSparseTestBase {
         );
 
         assertEquals("key is marked non-null but is null", exception.getMessage());
+    }
+
+    private static class TestForwardIndexCache extends ForwardIndexCache {
+        TestForwardIndexCache() {
+            super();
+        }
     }
 }

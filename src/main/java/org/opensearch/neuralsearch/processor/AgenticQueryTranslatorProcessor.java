@@ -4,7 +4,6 @@
  */
 package org.opensearch.neuralsearch.processor;
 
-import com.google.gson.Gson;
 import lombok.extern.log4j.Log4j2;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.xcontent.XContentType;
@@ -18,7 +17,7 @@ import org.opensearch.neuralsearch.query.AgenticSearchQueryBuilder;
 import org.opensearch.neuralsearch.settings.NeuralSearchSettingsAccessor;
 import org.opensearch.neuralsearch.stats.events.EventStatName;
 import org.opensearch.neuralsearch.stats.events.EventStatsManager;
-import org.opensearch.neuralsearch.util.NeuralSearchClusterUtil;
+import org.opensearch.search.SearchExtBuilder;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.pipeline.AbstractProcessor;
 import org.opensearch.search.pipeline.Processor;
@@ -27,21 +26,25 @@ import org.opensearch.search.pipeline.PipelineProcessingContext;
 import org.opensearch.core.action.ActionListener;
 
 import java.io.IOException;
-import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 import static org.opensearch.ingest.ConfigurationUtils.readStringProperty;
+import static org.opensearch.neuralsearch.query.ext.AgentStepsSearchExtBuilder.AGENT_STEPS_FIELD_NAME;
+import static org.opensearch.neuralsearch.query.ext.AgentStepsSearchExtBuilder.MEMORY_ID_FIELD_NAME;
+import static org.opensearch.neuralsearch.query.ext.AgentStepsSearchExtBuilder.DSL_QUERY_FIELD_NAME;
 
 @Log4j2
 public class AgenticQueryTranslatorProcessor extends AbstractProcessor implements SearchRequestProcessor {
 
     public static final String TYPE = "agentic_query_translator";
     private static final int MAX_AGENT_RESPONSE_SIZE = 10_000;
+    private static final int MAX_AGENT_ID_LENGTH = 100;
+    private static final String AGENT_ID_PATTERN = "^[a-zA-Z0-9_-]+$";
     private final MLCommonsClientAccessor mlClient;
     private final String agentId;
     private final NamedXContentRegistry xContentRegistry;
-    private static final Gson gson = new Gson();;
 
     AgenticQueryTranslatorProcessor(
         String tag,
@@ -82,15 +85,15 @@ public class AgenticQueryTranslatorProcessor extends AbstractProcessor implement
         if (hasOtherSearchFeatures(sourceBuilder)) {
             String errorMessage = String.format(
                 Locale.ROOT,
-                "Agentic search blocked - Invalid usage with other search features - Agent ID: [%s], Query: [%s]",
-                agentId,
-                agenticQuery.getQueryText()
+                "Invalid usage with other search features like aggregation, sort, filters, collapse - Agent ID: [%s]",
+                agentId
             );
-            requestListener.onFailure(new IllegalArgumentException(errorMessage));
+            agenticQuery.setAgentFailureReason(errorMessage);
+            requestListener.onFailure(new IllegalArgumentException("Agentic search blocked - " + errorMessage));
             return;
         }
 
-        executeAgentAsync(agenticQuery, request, requestListener);
+        executeAgentAsync(agenticQuery, request, requestContext, requestListener);
     }
 
     private boolean hasOtherSearchFeatures(SearchSourceBuilder sourceBuilder) {
@@ -106,78 +109,87 @@ public class AgenticQueryTranslatorProcessor extends AbstractProcessor implement
     private void executeAgentAsync(
         AgenticSearchQueryBuilder agenticQuery,
         SearchRequest request,
+        PipelineProcessingContext requestContext,
         ActionListener<SearchRequest> requestListener
     ) {
-        Map<String, String> parameters = new HashMap<>();
-        parameters.put("query_text", agenticQuery.getQueryText());
+        // First get agent type and prompts info
+        mlClient.getAgentDetails(agentId, ActionListener.wrap(agentInfo -> {
+            mlClient.executeAgent(request, agenticQuery, agentId, agentInfo, xContentRegistry, ActionListener.wrap(agentResponse -> {
+                try {
+                    String dslQuery = agentResponse.getDslQuery();
+                    String agentStepsSummary = agentResponse.getAgentStepsSummary();
+                    String memoryId = agentResponse.getMemoryId();
+                    // Validate response size to prevent memory exhaustion
+                    if (dslQuery == null) {
+                        String errorMessage = String.format(Locale.ROOT, "Null response from agent - Agent ID: [%s]", agentId);
+                        agenticQuery.setAgentFailureReason(errorMessage);
+                        throw new IllegalArgumentException("Agentic search failed - " + errorMessage);
+                    }
 
-        // Get index mapping from the search request
-        if (request.indices() != null && request.indices().length > 0) {
-            try {
-                Map<String, String> indexMappings = NeuralSearchClusterUtil.instance().getIndexMapping(request.indices());
-                parameters.put("index_mapping", indexMappings.toString());
-            } catch (Exception e) {
-                log.warn("Failed to get index mapping", e);
-            }
-        }
+                    if (dslQuery.length() > MAX_AGENT_RESPONSE_SIZE) {
+                        String errorMessage = String.format(
+                            Locale.ROOT,
+                            "Response size exceeded limit - Agent ID: [%s], Size: [%d]. Maximum allowed size is %d characters.",
+                            agentId,
+                            dslQuery.length(),
+                            MAX_AGENT_RESPONSE_SIZE
+                        );
+                        agenticQuery.setAgentFailureReason(errorMessage);
+                        throw new IllegalArgumentException("Agentic search blocked - " + errorMessage);
+                    }
 
-        if (agenticQuery.getQueryFields() != null && !agenticQuery.getQueryFields().isEmpty()) {
-            parameters.put("query_fields", gson.toJson(agenticQuery.getQueryFields()));
-        }
+                    // Store agent steps summary in request context for response processing
+                    if (agentStepsSummary != null && !agentStepsSummary.trim().isEmpty()) {
+                        requestContext.setAttribute(AGENT_STEPS_FIELD_NAME, agentStepsSummary);
+                    }
 
-        mlClient.executeAgent(agentId, parameters, ActionListener.wrap(agentResponse -> {
-            try {
-                log.debug("Generated Query: [{}]", agentResponse);
+                    if (memoryId != null && !memoryId.trim().isEmpty()) {
+                        requestContext.setAttribute(MEMORY_ID_FIELD_NAME, memoryId);
+                    }
 
-                // Validate response size to prevent memory exhaustion
-                if (agentResponse == null) {
-                    String errorMessage = String.format(
-                        Locale.ROOT,
-                        "Agentic search failed - Null response from agent - Agent ID: [%s], Query: [%s]",
-                        agentId,
-                        agenticQuery.getQueryText()
-                    );
-                    throw new IllegalArgumentException(errorMessage);
+                    requestContext.setAttribute(DSL_QUERY_FIELD_NAME, dslQuery);
+
+                    // Parse the agent response to get the new search source
+                    BytesReference bytes = new BytesArray(dslQuery);
+                    SearchSourceBuilder originalSourceBuilder = request.source();
+                    List<SearchExtBuilder> originalExtBuilders = originalSourceBuilder != null ? originalSourceBuilder.ext() : null;
+                    try (XContentParser parser = XContentType.JSON.xContent().createParser(xContentRegistry, null, bytes.streamInput())) {
+                        SearchSourceBuilder newSourceBuilder = SearchSourceBuilder.fromXContent(parser);
+                        if (originalExtBuilders != null && !originalExtBuilders.isEmpty()) {
+                            newSourceBuilder.ext(originalExtBuilders);
+                        }
+                        // Preserve source field selection
+                        if (originalSourceBuilder != null && originalSourceBuilder.fetchSource() != null) {
+                            newSourceBuilder.fetchSource(originalSourceBuilder.fetchSource());
+                        }
+                        request.source(newSourceBuilder);
+                    }
+
+                    requestListener.onResponse(request);
+                } catch (IOException e) {
+                    String errorMessage = String.format(Locale.ROOT, "Parse error - Agent ID: [%s], Error: [%s]", agentId, e.getMessage());
+                    agenticQuery.setAgentFailureReason(errorMessage);
+                    requestListener.onFailure(new IOException("Agentic search failed - " + errorMessage, e));
                 }
-
-                if (agentResponse.length() > MAX_AGENT_RESPONSE_SIZE) {
-                    String errorMessage = String.format(
-                        Locale.ROOT,
-                        "Agentic search blocked - Response size exceeded limit - Agent ID: [%s], Size: [%d], Query: [%s]. Maximum allowed size is %d characters.",
-                        agentId,
-                        agentResponse.length(),
-                        agenticQuery.getQueryText(),
-                        MAX_AGENT_RESPONSE_SIZE
-                    );
-                    throw new IllegalArgumentException(errorMessage);
-                }
-
-                // Parse the agent response to get the new search source
-                BytesReference bytes = new BytesArray(agentResponse);
-                try (XContentParser parser = XContentType.JSON.xContent().createParser(xContentRegistry, null, bytes.streamInput())) {
-                    SearchSourceBuilder newSourceBuilder = SearchSourceBuilder.fromXContent(parser);
-                    request.source(newSourceBuilder);
-                }
-
-                requestListener.onResponse(request);
-            } catch (IOException e) {
+            }, e -> {
                 String errorMessage = String.format(
                     Locale.ROOT,
-                    "Agentic search failed - Parse error - Agent ID: [%s], Error: [%s]",
+                    "Agent execution error - Agent ID: [%s], Error: [%s]",
                     agentId,
                     e.getMessage()
                 );
-                requestListener.onFailure(new IOException(errorMessage, e));
-            }
+                agenticQuery.setAgentFailureReason(errorMessage);
+                requestListener.onFailure(new IllegalArgumentException("Agentic search failed - " + errorMessage, e));
+            }));
         }, e -> {
             String errorMessage = String.format(
                 Locale.ROOT,
-                "Agentic search failed - Agent execution error - Agent ID: [%s], Query: [%s], Error: [%s]",
+                "Failed to get agent info - Agent ID: [%s], Error: [%s]",
                 agentId,
-                agenticQuery.getQueryText(),
                 e.getMessage()
             );
-            requestListener.onFailure(new RuntimeException(errorMessage, e));
+            agenticQuery.setAgentFailureReason(errorMessage);
+            requestListener.onFailure(new IllegalArgumentException("Agentic search failed - " + errorMessage, e));
         }));
     }
 
@@ -215,15 +227,21 @@ public class AgenticQueryTranslatorProcessor extends AbstractProcessor implement
             Map<String, Object> config,
             PipelineContext pipelineContext
         ) throws IllegalArgumentException, IllegalStateException {
-            // feature flag check
-            if (!settingsAccessor.isAgenticSearchEnabled()) {
-                throw new IllegalStateException(
-                    "Agentic search is currently disabled. Enable it using the 'plugins.neural_search.agentic_search_enabled' setting."
-                );
-            }
             String agentId = readStringProperty(TYPE, tag, config, "agent_id");
             if (agentId == null || agentId.trim().isEmpty()) {
                 throw new IllegalArgumentException("agent_id is required for agentic_query_translator processor");
+            }
+
+            // Validate agent ID length
+            if (agentId.length() > MAX_AGENT_ID_LENGTH) {
+                throw new IllegalArgumentException(
+                    String.format(Locale.ROOT, "agent_id exceeds maximum length of %d characters", MAX_AGENT_ID_LENGTH)
+                );
+            }
+
+            // Validate agent ID format
+            if (!agentId.matches(AGENT_ID_PATTERN)) {
+                throw new IllegalArgumentException("agent_id must contain only alphanumeric characters, hyphens, and underscores");
             }
             return new AgenticQueryTranslatorProcessor(tag, description, ignoreFailure, mlClient, agentId, xContentRegistry);
         }

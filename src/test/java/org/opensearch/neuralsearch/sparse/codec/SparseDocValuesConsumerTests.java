@@ -26,6 +26,7 @@ import org.opensearch.neuralsearch.sparse.cache.ForwardIndexCache;
 import org.opensearch.neuralsearch.sparse.cache.ForwardIndexCacheItem;
 import org.opensearch.neuralsearch.sparse.common.MergeStateFacade;
 import org.opensearch.neuralsearch.sparse.data.SparseVector;
+import org.opensearch.neuralsearch.sparse.quantization.ByteQuantizer;
 
 import java.util.HashMap;
 import java.util.List;
@@ -39,7 +40,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.opensearch.neuralsearch.sparse.common.SparseConstants.APPROXIMATE_THRESHOLD_FIELD;
-import static org.opensearch.neuralsearch.sparse.mapper.SparseTokensField.SPARSE_FIELD;
+import static org.opensearch.neuralsearch.sparse.mapper.SparseVectorField.SPARSE_FIELD;
 
 public class SparseDocValuesConsumerTests extends AbstractSparseTestBase {
     @Mock
@@ -95,7 +96,7 @@ public class SparseDocValuesConsumerTests extends AbstractSparseTestBase {
         when(mockMergeHelper.newSparseDocValuesReader(any())).thenReturn(sparseDocValuesReader);
         when(sparseDocValuesReader.getBinary(any())).thenReturn(binaryDocValues);
         when(binaryDocValues.nextDoc()).thenReturn(1, DocIdSetIterator.NO_MORE_DOCS);
-        SparseVector vector = new SparseVector(Map.of(1, 0.1f, 2, 0.2f));
+        SparseVector vector = new SparseVector(Map.of(1, 0.1f, 2, 0.2f), new ByteQuantizer(3.0f));
         when(binaryDocValues.cachedSparseVector()).thenReturn(vector);
 
         docValuesProducer = mock(DocValuesProducer.class);

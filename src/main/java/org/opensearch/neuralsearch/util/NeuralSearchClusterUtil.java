@@ -4,18 +4,19 @@
  */
 package org.opensearch.neuralsearch.util;
 
+import lombok.AccessLevel;
 import lombok.Getter;
+import lombok.NoArgsConstructor;
 import lombok.NonNull;
+import lombok.Setter;
+import lombok.extern.log4j.Log4j2;
 import org.opensearch.Version;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
-
-import lombok.AccessLevel;
-import lombok.NoArgsConstructor;
-import lombok.extern.log4j.Log4j2;
 import org.opensearch.core.index.Index;
+import org.opensearch.search.pipeline.SearchPipelineService;
 
 import java.util.Arrays;
 import java.util.List;
@@ -31,6 +32,8 @@ public class NeuralSearchClusterUtil {
     @Getter
     private ClusterService clusterService;
     private IndexNameExpressionResolver indexNameExpressionResolver;
+    @Setter
+    private SearchPipelineService searchPipelineService;
 
     private static NeuralSearchClusterUtil instance;
 
@@ -38,9 +41,13 @@ public class NeuralSearchClusterUtil {
      * Return instance of the cluster context, must be initialized first for proper usage
      * @return instance of cluster context
      */
-    public static synchronized NeuralSearchClusterUtil instance() {
+    public static NeuralSearchClusterUtil instance() {
         if (instance == null) {
-            instance = new NeuralSearchClusterUtil();
+            synchronized (NeuralSearchClusterUtil.class) {
+                if (instance == null) {
+                    instance = new NeuralSearchClusterUtil();
+                }
+            }
         }
         return instance;
     }
@@ -85,5 +92,17 @@ public class NeuralSearchClusterUtil {
             throw new IllegalStateException("Failed to extract index mapping", e);
         }
         throw new IllegalStateException("No valid index found to extract mapping");
+    }
+
+    /**
+     * Check if the system generated factory is enabled or not
+     * @param factoryName name of the factory
+     * @return If the factory is enabled or not
+     */
+    public boolean isSystemGeneratedFactoryEnabled(String factoryName) {
+        if (searchPipelineService == null) {
+            throw new IllegalStateException("search pipeline service is not initialized in the neural search cluster util.");
+        }
+        return searchPipelineService.isSystemGeneratedFactoryEnabled(factoryName);
     }
 }

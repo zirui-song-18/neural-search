@@ -5,31 +5,25 @@
 package org.opensearch.neuralsearch.sparse;
 
 import lombok.SneakyThrows;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.junit.Before;
 import org.opensearch.client.Request;
 import org.opensearch.client.Response;
-import org.opensearch.cluster.routing.Murmur3HashFunction;
-import org.opensearch.common.xcontent.XContentFactory;
-import org.opensearch.core.common.util.CollectionUtils;
 import org.opensearch.core.rest.RestStatus;
-import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.neuralsearch.BaseNeuralSearchIT;
+import org.opensearch.neuralsearch.SparseTestCommon;
 import org.opensearch.neuralsearch.plugin.NeuralSearch;
+import org.opensearch.neuralsearch.query.NeuralSparseQueryBuilder;
 import org.opensearch.neuralsearch.sparse.common.SparseConstants;
-import org.opensearch.neuralsearch.sparse.mapper.SparseTokensFieldMapper;
 import org.opensearch.neuralsearch.stats.metrics.MetricStatName;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -56,7 +50,7 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         float clusterRatio,
         int approximateThreshold
     ) throws IOException {
-        createSparseIndex(indexName, fieldName, nPostings, alpha, clusterRatio, approximateThreshold, 1, 0);
+        SparseTestCommon.createSparseIndex(client(), indexName, fieldName, nPostings, alpha, clusterRatio, approximateThreshold);
     }
 
     protected void createSparseIndex(
@@ -69,7 +63,8 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         int shards,
         int replicas
     ) throws IOException {
-        Request request = configureSparseIndex(
+        SparseTestCommon.createSparseIndex(
+            client(),
             indexName,
             fieldName,
             nPostings,
@@ -79,13 +74,35 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
             shards,
             replicas
         );
-        Response response = client().performRequest(request);
-        assertEquals(RestStatus.OK, RestStatus.fromCode(response.getStatusLine().getStatusCode()));
     }
 
-    private Request configureSparseIndex(
+    protected void createNestedSparseIndex(
         String indexName,
-        String fieldName,
+        String nestedFieldName,
+        String sparseFieldName,
+        int nPostings,
+        float alpha,
+        float clusterRatio,
+        int approximateThreshold
+    ) throws IOException {
+        SparseTestCommon.createNestedSparseIndex(
+            client(),
+            indexName,
+            nestedFieldName,
+            sparseFieldName,
+            nPostings,
+            alpha,
+            clusterRatio,
+            approximateThreshold,
+            1,
+            0
+        );
+    }
+
+    protected void createNestedSparseIndex(
+        String indexName,
+        String nestedFieldName,
+        String sparseFieldName,
         int nPostings,
         float alpha,
         float clusterRatio,
@@ -93,214 +110,143 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         int shards,
         int replicas
     ) throws IOException {
-        String indexSettings = prepareIndexSettings(shards, replicas);
-        String indexMappings = prepareIndexMapping(nPostings, alpha, clusterRatio, approximateThreshold, fieldName);
-        Request request = new Request("PUT", "/" + indexName);
-        String body = String.format(
-            Locale.ROOT,
-            "{\n" + "  \"settings\": %s,\n" + "  \"mappings\": %s\n" + "}",
-            indexSettings,
-            indexMappings
+        SparseTestCommon.createNestedSparseIndex(
+            client(),
+            indexName,
+            nestedFieldName,
+            sparseFieldName,
+            nPostings,
+            alpha,
+            clusterRatio,
+            approximateThreshold,
+            shards,
+            replicas
         );
-        request.setJsonEntity(body);
-        return request;
-    }
-
-    protected String convertTokensToText(Map<String, Float> tokens) {
-        StringBuilder builder = new StringBuilder();
-        boolean first = true;
-        for (Map.Entry<String, Float> entry : tokens.entrySet()) {
-            if (!first) {
-                builder.append(",");
-            }
-            builder.append("\"");
-            builder.append(entry.getKey());
-            builder.append("\": ");
-            builder.append(entry.getValue());
-            first = false;
-        }
-        return builder.toString();
     }
 
     protected String prepareIndexSettings() throws IOException {
-        return prepareIndexSettings(1, 0);
+        return SparseTestCommon.prepareIndexSettings(1, 0);
     }
 
     protected String prepareIndexSettings(int shards, int replicas) throws IOException {
-        XContentBuilder settingBuilder = XContentFactory.jsonBuilder()
-            .startObject()
-            .startObject("index")
-            .field("number_of_routing_shards", shards) // Shard routing setting
-            .field("sparse", true)
-            .field("number_of_shards", shards)
-            .field("number_of_replicas", replicas)
-            .endObject()
-            .endObject();
-        return settingBuilder.toString();
+        return SparseTestCommon.prepareIndexSettings(shards, replicas);
     }
 
     protected void forceMerge(String indexName) throws IOException, ParseException {
-        Request request = new Request("POST", "/" + indexName + "/_forcemerge?max_num_segments=1");
-        Response response = client().performRequest(request);
-        String str = EntityUtils.toString(response.getEntity());
-        assertEquals(RestStatus.OK, RestStatus.fromCode(response.getStatusLine().getStatusCode()));
+        SparseTestCommon.forceMerge(client(), indexName);
     }
 
     protected String prepareIndexMapping(int nPostings, float alpha, float clusterRatio, int approximateThreshold, String sparseFieldName)
         throws IOException {
-        XContentBuilder mappingBuilder = XContentFactory.jsonBuilder()
-            .startObject()
-            .startObject("properties")
-            .startObject(sparseFieldName)
-            .field("type", SparseTokensFieldMapper.CONTENT_TYPE)
-            .startObject("method")
-            .field("name", ALGO_NAME)
-            .startObject("parameters")
-            .field("n_postings", nPostings) // Integer: length of posting list
-            .field("summary_prune_ratio", alpha) // Float: alpha-prune ration for summary
-            .field("cluster_ratio", clusterRatio) // Float: cluster ratio
-            .field("approximate_threshold", approximateThreshold)
-            .endObject()
-            .endObject()
-            .endObject()
-            .endObject()
-            .endObject();
-        return mappingBuilder.toString();
+        return SparseTestCommon.prepareIndexMapping(nPostings, alpha, clusterRatio, approximateThreshold, sparseFieldName);
+    }
+
+    protected String prepareIndexMapping(
+        int nPostings,
+        float alpha,
+        float clusterRatio,
+        int approximateThreshold,
+        float quantizationCeilingIngest,
+        float quantizationCeilingSearch,
+        String sparseFieldName
+    ) throws IOException {
+        return SparseTestCommon.prepareIndexMapping(
+            nPostings,
+            alpha,
+            clusterRatio,
+            approximateThreshold,
+            quantizationCeilingIngest,
+            quantizationCeilingSearch,
+            sparseFieldName
+        );
     }
 
     @SneakyThrows
-    protected void prepareMultiShardReplicasIndex(String TEST_INDEX_NAME, String TEST_SPARSE_FIELD_NAME, String TEST_TEXT_FIELD_NAME) {
-        int shards = 3;
-        int docCount = 100;
-        // effective number of replica is capped by the number of OpenSearch nodes minus 1
-        int replicas = Math.min(3, getNodeCount() - 1);
-        createSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, 100, 0.4f, 0.1f, docCount, shards, replicas);
-        // Verify index exists
-        assertTrue(indexExists(TEST_INDEX_NAME));
-        // Ingest documents
-        List<Map<String, Float>> docs = new ArrayList<>();
-        for (int i = 0; i < docCount; ++i) {
-            Map<String, Float> tokens = new HashMap<>();
-            tokens.put("1000", randomFloat());
-            tokens.put("2000", randomFloat());
-            tokens.put("3000", randomFloat());
-            tokens.put("4000", randomFloat());
-            tokens.put("5000", randomFloat());
-            docs.add(tokens);
-        }
+    protected List<Map<String, Float>> prepareIngestDocuments(int docCount) {
+        return SparseTestCommon.prepareIngestDocuments(docCount);
+    }
 
-        List<String> routingIds = generateUniqueRoutingIds(shards);
-        for (int i = 0; i < shards; ++i) {
-            ingestDocuments(
-                TEST_INDEX_NAME,
-                TEST_TEXT_FIELD_NAME,
-                TEST_SPARSE_FIELD_NAME,
-                docs,
-                Collections.emptyList(),
-                i * docCount + 1,
-                routingIds.get(i)
-            );
-        }
+    @SneakyThrows
+    protected void prepareSparseIndex(String index, String sparseField, String textField) {
+        SparseTestCommon.prepareSparseIndex(client(), index, sparseField, textField);
+    }
 
-        forceMerge(TEST_INDEX_NAME);
-        // wait until force merge complete
-        waitForSegmentMerge(TEST_INDEX_NAME, shards, replicas);
-        assertEquals(shards * (replicas + 1), getSegmentCount(TEST_INDEX_NAME));
+    @SneakyThrows
+    protected void prepareMultiShardReplicasIndex(String index, String sparseField, String textField, int shards, int replicas) {
+        SparseTestCommon.prepareMultiShardReplicasIndex(client(), index, sparseField, textField, shards, replicas);
+    }
+
+    @SneakyThrows
+    protected void prepareNonSparseIndex(String index) {
+        SparseTestCommon.prepareNonSparseIndex(client(), index);
     }
 
     @SneakyThrows
     protected void prepareMixSeismicRankFeaturesIndex(String TEST_INDEX_NAME, String TEST_SPARSE_FIELD_NAME, String TEST_TEXT_FIELD_NAME) {
-        createSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, 4, 0.4f, 0.5f, 4);
-
-        ingestDocuments(
-            TEST_INDEX_NAME,
-            TEST_TEXT_FIELD_NAME,
-            TEST_SPARSE_FIELD_NAME,
-            List.of(Map.of("1000", 0.1f, "2000", 0.1f), Map.of("1000", 0.2f, "2000", 0.2f), Map.of("1000", 0.3f, "2000", 0.3f)),
-            null,
-            1
-        );
-        ingestDocuments(
-            TEST_INDEX_NAME,
-            TEST_TEXT_FIELD_NAME,
-            TEST_SPARSE_FIELD_NAME,
-            List.of(
-                Map.of("1000", 0.4f, "2000", 0.4f),
-                Map.of("1000", 0.5f, "2000", 0.5f),
-                Map.of("1000", 0.6f, "2000", 0.6f),
-                Map.of("1000", 0.7f, "2000", 0.7f),
-                Map.of("1000", 0.8f, "2000", 0.8f)
-            ),
-            null,
-            4
-        );
+        SparseTestCommon.prepareMixSeismicRankFeaturesIndex(client(), TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME);
     }
 
     @SneakyThrows
     protected void prepareOnlyRankFeaturesIndex(String TEST_INDEX_NAME, String TEST_SPARSE_FIELD_NAME, String TEST_TEXT_FIELD_NAME) {
-        createSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, 4, 0.4f, 0.5f, 4);
+        SparseTestCommon.prepareOnlyRankFeaturesIndex(client(), TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME);
+    }
 
-        ingestDocumentsAndForceMerge(
-            TEST_INDEX_NAME,
-            TEST_TEXT_FIELD_NAME,
-            TEST_SPARSE_FIELD_NAME,
-            List.of(Map.of("1000", 0.1f, "2000", 0.1f), Map.of("1000", 0.2f, "2000", 0.2f), Map.of("1000", 0.3f, "2000", 0.3f))
-        );
+    @SneakyThrows
+    protected void createIndexWithMultipleSeismicFields(String indexName, List<String> fieldNames) {
+        SparseTestCommon.createIndexWithMultipleSeismicFields(client(), indexName, fieldNames);
     }
 
     protected void waitForSegmentMerge(String index) throws InterruptedException {
-        waitForSegmentMerge(index, 1, 0);
+        SparseTestCommon.waitForSegmentMerge(client(), index);
     }
 
     protected void waitForSegmentMerge(String index, int shards, int replicas) throws InterruptedException {
-        int maxRetry = 30;
-        for (int i = 0; i < maxRetry; ++i) {
-            if (shards * (1 + replicas) == getSegmentCount(index)) {
-                return;
-            }
-            Thread.sleep(1000);
-        }
+        SparseTestCommon.waitForSegmentMerge(client(), index, shards, replicas);
     }
 
     protected int getSegmentCount(String index) {
-        Request request = new Request("GET", "/_cat/segments/" + index);
-        try {
-            Response response = client().performRequest(request);
-            String str = EntityUtils.toString(response.getEntity());
-            String[] lines = str.split("\n");
-            return lines.length;
-        } catch (IOException | ParseException e) {
-            return 0;
-        }
+        return SparseTestCommon.getSegmentCount(client(), index);
     }
 
     protected int getNodeCount() throws Exception {
-        Request request = new Request("GET", "/_cat/nodes/");
-        Response response = client().performRequest(request);
-        String str = EntityUtils.toString(response.getEntity());
-        String[] lines = str.split("\n");
-        return lines.length;
+        return SparseTestCommon.getNodeCount(client());
     }
 
     @SneakyThrows
-    protected void ingestDocumentsAndForceMerge(String index, String textField, String sparseField, List<Map<String, Float>> docTokens) {
-        ingestDocumentsAndForceMerge(index, textField, sparseField, docTokens, null);
+    protected void ingestDocumentsAndForceMergeForSingleShard(
+        String index,
+        String textField,
+        String sparseField,
+        List<Map<String, Float>> docTokens
+    ) {
+        SparseTestCommon.ingestDocumentsAndForceMergeForSingleShard(client(), index, textField, sparseField, docTokens);
     }
 
     @SneakyThrows
-    protected void ingestDocumentsAndForceMerge(
+    protected void ingestDocumentsAndForceMergeForSingleShard(
         String index,
         String textField,
         String sparseField,
         List<Map<String, Float>> docTokens,
         List<String> docTexts
     ) {
-        ingestDocuments(index, textField, sparseField, docTokens, docTexts, 1);
+        SparseTestCommon.ingestDocumentsAndForceMergeForSingleShard(client(), index, textField, sparseField, docTokens, docTexts);
+    }
 
-        forceMerge(index);
-        // wait until force merge complete
-        waitForSegmentMerge(index);
-        assertEquals(1, getSegmentCount(index));
+    @SneakyThrows
+    protected void ingestNestedDocumentsAndForceMergeForSingleShard(
+        String index,
+        String nestedFieldName,
+        List<List<Map<String, Float>>> documentsWithChunks,
+        String pipelineName
+    ) {
+        SparseTestCommon.ingestNestedDocumentsAndForceMergeForSingleShard(
+            client(),
+            index,
+            nestedFieldName,
+            documentsWithChunks,
+            pipelineName
+        );
     }
 
     protected void ingestDocuments(
@@ -311,7 +257,7 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         List<String> text,
         int startingId
     ) {
-        ingestDocuments(index, textField, sparseField, docTokens, text, startingId, null);
+        SparseTestCommon.ingestDocuments(index, textField, sparseField, docTokens, text, startingId);
     }
 
     protected String prepareSparseBulkIngestPayload(
@@ -322,26 +268,7 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         List<String> docTexts,
         int startingId
     ) {
-        StringBuilder payloadBuilder = new StringBuilder();
-        int size = (StringUtils.isEmpty(sparseField) && docTokens.isEmpty()) ? docTexts.size() : docTokens.size();
-        for (int i = 0; i < size; i++) {
-            payloadBuilder.append(
-                String.format(Locale.ROOT, "{ \"index\": { \"_index\": \"%s\", \"_id\": \"%d\"} }", index, startingId + i)
-            );
-            payloadBuilder.append(System.lineSeparator());
-            String text = CollectionUtils.isEmpty(docTexts) ? "text" : docTexts.get(i);
-            if (StringUtils.isEmpty(sparseField)) {
-                payloadBuilder.append(String.format(Locale.ROOT, "{\"%s\": \"%s\"}", textField, text));
-            } else {
-                Map<String, Float> docToken = docTokens.get(i);
-                String strTokens = convertTokensToText(docToken);
-                payloadBuilder.append(
-                    String.format(Locale.ROOT, "{\"%s\": \"%s\", \"%s\": {%s}}", textField, text, sparseField, strTokens)
-                );
-            }
-            payloadBuilder.append(System.lineSeparator());
-        }
-        return payloadBuilder.toString();
+        return SparseTestCommon.prepareSparseBulkIngestPayload(index, textField, sparseField, docTokens, docTexts, startingId);
     }
 
     protected void ingestDocuments(
@@ -353,38 +280,7 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
         int startingId,
         String routing
     ) {
-        String payload = prepareSparseBulkIngestPayload(index, textField, sparseField, docTokens, docTexts, startingId);
-        bulkIngest(payload, null, routing);
-    }
-
-    /**
-     * Generates unique routing IDs that map to different shards for multi-shard testing.
-     * Uses Murmur3HashFunction to simulate OpenSearch's shard routing algorithm, which determines
-     * which shard a document belongs to based on its routing value hash.
-     *
-     * The method iterates through candidate routing values and uses the same hash function
-     * that OpenSearch uses internally to ensure documents are distributed across different shards.
-     *
-     * @param num number of routing ids, should be less than or equal to shard number.
-     * @return a list of routing ids that will route documents to different shards
-     */
-    protected List<String> generateUniqueRoutingIds(int num) {
-        List<String> routingIds = new ArrayList<>();
-        Set<Integer> uniqueShardIds = new HashSet<>();
-        for (int i = 0; i < 10000; ++i) {
-            String candidate = String.valueOf(i);
-            int hash = Murmur3HashFunction.hash(candidate);
-            int shardId = Math.floorMod(hash, num);
-            if (uniqueShardIds.contains(shardId)) {
-                continue;
-            }
-            uniqueShardIds.add(shardId);
-            routingIds.add(candidate);
-            if (routingIds.size() == num) {
-                break;
-            }
-        }
-        return routingIds;
+        SparseTestCommon.ingestDocuments(index, textField, sparseField, docTokens, docTexts, startingId, routing);
     }
 
     @SneakyThrows
@@ -403,5 +299,75 @@ public abstract class SparseBaseIT extends BaseNeuralSearchIT {
             sparseMemoryUsageStats.add(NumberUtils.createDouble(stringValue));
         }
         return sparseMemoryUsageStats;
+    }
+
+    protected NeuralSparseQueryBuilder getNeuralSparseQueryBuilder(String field, int cut, float hf, int k, Map<String, Float> query) {
+        return SparseTestCommon.getNeuralSparseQueryBuilder(field, cut, hf, k, query);
+    }
+
+    protected NeuralSparseQueryBuilder getNeuralSparseQueryBuilder(
+        String field,
+        int cut,
+        float hf,
+        int k,
+        Map<String, Float> query,
+        QueryBuilder filter
+    ) {
+        return SparseTestCommon.getNeuralSparseQueryBuilder(field, cut, hf, k, query, filter);
+    }
+
+    protected Map<String, Object> searchWithExplain(String index, QueryBuilder queryBuilder, int resultSize) {
+        return search(index, queryBuilder, null, resultSize, Map.of("explain", "true"), null);
+    }
+
+    @SneakyThrows
+    protected int getEffectiveReplicaCount(int replicas) {
+        return SparseTestCommon.getEffectiveReplicaCount(client(), replicas);
+    }
+
+    protected List<String> getDocIDs(Map<String, Object> searchResults) {
+        return SparseTestCommon.getDocIDs(searchResults);
+    }
+
+    protected void updateSparseVector(String index, String docId, String field, Map<String, Float> docTokens) throws IOException {
+        SparseTestCommon.updateSparseVector(client(), index, docId, field, docTokens);
+    }
+
+    @SuppressWarnings("unchecked")
+    protected void assertExplanationContains(Map<String, Object> explanation, String... expectedDescriptions) {
+        assertNotNull("Explanation should be present", explanation);
+
+        List<Map<String, Object>> details = (List<Map<String, Object>>) explanation.get("details");
+        assertNotNull("Explanation details should be present", details);
+        assertFalse("Explanation should have details", details.isEmpty());
+
+        Set<String> foundDescriptions = new HashSet<>();
+        for (Map<String, Object> detail : details) {
+            String detailDesc = (String) detail.get("description");
+            for (String expected : expectedDescriptions) {
+                if (detailDesc.contains(expected)) {
+                    foundDescriptions.add(expected);
+                }
+            }
+        }
+
+        for (String expected : expectedDescriptions) {
+            assertTrue("Explanation should contain: " + expected, foundDescriptions.contains(expected));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    protected void assertExplanationNotContains(Map<String, Object> explanation, String... unexpectedDescriptions) {
+        assertNotNull("Explanation should be present", explanation);
+
+        List<Map<String, Object>> details = (List<Map<String, Object>>) explanation.get("details");
+        assertNotNull("Explanation details should be present", details);
+
+        for (Map<String, Object> detail : details) {
+            String detailDesc = (String) detail.get("description");
+            for (String unexpected : unexpectedDescriptions) {
+                assertFalse("Explanation should NOT contain: " + unexpected, detailDesc.contains(unexpected));
+            }
+        }
     }
 }

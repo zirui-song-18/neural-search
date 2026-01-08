@@ -25,7 +25,6 @@ import org.opensearch.index.query.WithFieldName;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.QueryShardContext;
-import org.opensearch.neuralsearch.settings.NeuralSearchSettingsAccessor;
 import org.opensearch.neuralsearch.stats.events.EventStatName;
 import org.opensearch.neuralsearch.stats.events.EventStatsManager;
 
@@ -49,6 +48,7 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
     public static final String NAME = "agentic";
     public static final ParseField QUERY_TEXT_FIELD = new ParseField("query_text");
     public static final ParseField QUERY_FIELDS = new ParseField("query_fields");
+    public static final ParseField MEMORY_ID_FIELD = new ParseField("memory_id");
 
     // Regex patterns for sanitizing query text
     private static final String SYSTEM_INSTRUCTION_PATTERN = "(?i)\\b(system|instruction|prompt)\\s*:";
@@ -57,18 +57,15 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
     private static final int MAX_QUERY_LENGTH = 1000;
     public String queryText;
     public List<String> queryFields;
-
-    // setting accessor to retrieve agentic search feature flag
-    private static NeuralSearchSettingsAccessor SETTINGS_ACCESSOR;
-
-    public static void initialize(NeuralSearchSettingsAccessor settingsAccessor) {
-        AgenticSearchQueryBuilder.SETTINGS_ACCESSOR = settingsAccessor;
-    }
+    public String memoryId;
+    private transient String agentFailureReason;
 
     public AgenticSearchQueryBuilder(StreamInput in) throws IOException {
         super(in);
         this.queryText = in.readString();
         this.queryFields = in.readOptionalStringList();
+        this.memoryId = in.readOptionalString();
+        this.agentFailureReason = in.readOptionalString();
     }
 
     public String getQueryText() {
@@ -79,32 +76,37 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
         return queryFields;
     }
 
+    public String getMemoryId() {
+        return memoryId;
+    }
+
+    public void setAgentFailureReason(String reason) {
+        this.agentFailureReason = reason;
+    }
+
+    public String getAgentFailureReason() {
+        return agentFailureReason;
+    }
+
     @Override
     protected void doWriteTo(StreamOutput out) throws IOException {
-        // feature flag check
-        if (!SETTINGS_ACCESSOR.isAgenticSearchEnabled()) {
-            throw new IllegalStateException(
-                "Agentic search is currently disabled. Enable it using the 'plugins.neural_search.agentic_search_enabled' setting."
-            );
-        }
         out.writeString(this.queryText);
         out.writeOptionalStringCollection(this.queryFields);
+        out.writeOptionalString(this.memoryId);
+        out.writeOptionalString(this.agentFailureReason);
     }
 
     @Override
     protected void doXContent(XContentBuilder xContentBuilder, Params params) throws IOException {
-        // feature flag check
-        if (!SETTINGS_ACCESSOR.isAgenticSearchEnabled()) {
-            throw new IllegalStateException(
-                "Agentic search is currently disabled. Enable it using the 'plugins.neural_search.agentic_search_enabled' setting."
-            );
-        }
         xContentBuilder.startObject(NAME);
         if (Objects.nonNull(QUERY_TEXT_FIELD)) {
             xContentBuilder.field(QUERY_TEXT_FIELD.getPreferredName(), queryText);
         }
         if (Objects.nonNull(queryFields) && !queryFields.isEmpty()) {
             xContentBuilder.field(QUERY_FIELDS.getPreferredName(), queryFields);
+        }
+        if (Objects.nonNull(memoryId) && !memoryId.trim().isEmpty()) {
+            xContentBuilder.field(MEMORY_ID_FIELD.getPreferredName(), memoryId);
         }
         xContentBuilder.endObject();
     }
@@ -133,6 +135,8 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
             } else if (token.isValue()) {
                 if (QUERY_TEXT_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     agenticSearchQueryBuilder.queryText = parser.text();
+                } else if (MEMORY_ID_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    agenticSearchQueryBuilder.memoryId = parser.text();
                 } else {
                     throw new ParsingException(parser.getTokenLocation(), "Unknown field [" + currentFieldName + "]");
                 }
@@ -171,6 +175,10 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
 
     @Override
     protected Query doToQuery(QueryShardContext context) throws IOException {
+        if (this.agentFailureReason != null) {
+            throw new IllegalStateException("Agentic search failed: " + this.agentFailureReason);
+        }
+
         throw new IllegalStateException(
             "Agentic search query must be used as top-level query, not nested inside other queries. Should be used with agentic_query_translator search processor"
         );
@@ -183,12 +191,13 @@ public final class AgenticSearchQueryBuilder extends AbstractQueryBuilder<Agenti
         EqualsBuilder equalsBuilder = new EqualsBuilder();
         equalsBuilder.append(queryText, obj.queryText);
         equalsBuilder.append(queryFields, obj.queryFields);
+        equalsBuilder.append(memoryId, obj.memoryId);
         return equalsBuilder.isEquals();
     }
 
     @Override
     protected int doHashCode() {
-        return new HashCodeBuilder().append(queryText).append(queryFields).toHashCode();
+        return new HashCodeBuilder().append(queryText).append(queryFields).append(memoryId).toHashCode();
     }
 
     @Override

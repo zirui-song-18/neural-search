@@ -4,6 +4,35 @@
  */
 package org.opensearch.neuralsearch.processor;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableMap;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.extern.log4j.Log4j2;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.opensearch.action.get.GetResponse;
+import org.opensearch.action.get.MultiGetItemResponse;
+import org.opensearch.action.get.MultiGetRequest;
+import org.opensearch.action.get.MultiGetResponse;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.collect.Tuple;
+import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.common.util.CollectionUtils;
+import org.opensearch.env.Environment;
+import org.opensearch.index.mapper.IndexFieldMapper;
+import org.opensearch.ingest.AbstractBatchingProcessor;
+import org.opensearch.ingest.IngestDocument;
+import org.opensearch.ingest.IngestDocumentWrapper;
+import org.opensearch.ml.common.input.parameter.MLAlgoParams;
+import org.opensearch.neuralsearch.ml.MLCommonsClientAccessor;
+import org.opensearch.neuralsearch.processor.optimization.InferenceFilter;
+import org.opensearch.neuralsearch.util.ProcessorDocumentUtils;
+import org.opensearch.neuralsearch.util.TokenWeightUtil;
+import org.opensearch.neuralsearch.util.prune.PruneType;
+import org.opensearch.neuralsearch.util.prune.PruneUtils;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -21,37 +50,7 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.tuple.ImmutablePair;
-import org.apache.commons.lang3.tuple.Pair;
-import org.opensearch.action.get.GetResponse;
-import org.opensearch.action.get.MultiGetItemResponse;
-import org.opensearch.action.get.MultiGetRequest;
-import org.opensearch.action.get.MultiGetResponse;
-import org.opensearch.common.collect.Tuple;
-import org.opensearch.core.action.ActionListener;
-import org.opensearch.core.common.util.CollectionUtils;
-import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.env.Environment;
-import org.opensearch.index.mapper.IndexFieldMapper;
-
-import org.opensearch.ingest.AbstractBatchingProcessor;
-import org.opensearch.ingest.IngestDocument;
-import org.opensearch.ingest.IngestDocumentWrapper;
-import org.opensearch.neuralsearch.ml.MLCommonsClientAccessor;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
-
-import lombok.extern.log4j.Log4j2;
-import org.opensearch.neuralsearch.processor.optimization.InferenceFilter;
-import org.opensearch.neuralsearch.util.ProcessorDocumentUtils;
-import org.opensearch.neuralsearch.util.TokenWeightUtil;
-import org.opensearch.neuralsearch.util.prune.PruneType;
-import org.opensearch.neuralsearch.util.prune.PruneUtils;
-
+import static org.opensearch.neuralsearch.processor.EmbeddingContentType.PASSAGE;
 import static org.opensearch.neuralsearch.constants.DocFieldNames.ID_FIELD;
 import static org.opensearch.neuralsearch.constants.DocFieldNames.INDEX_FIELD;
 
@@ -81,9 +80,9 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
 
     private final String type;
 
-    // This field is used for nested knn_vector/rank_features field. The value of the field will be used as the
+    // This field is used for nested knn_vector/rank_features/sparse_vector field. The value of the field will be used as the
     // default key for the nested object.
-    private final String listTypeNestedMapKey;
+    protected final String listTypeNestedMapKey;
 
     protected final String modelId;
 
@@ -223,18 +222,12 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
         inferenceList = sortedResult.v1();
         Map<Integer, Integer> originalOrder = sortedResult.v2();
         doBatchExecute(inferenceList, results -> {
-            batchExecuteHandler(results, ingestDocumentWrappers, dataForInferences, originalOrder, handler);
+            batchExecuteHandler(results, dataForInferences, originalOrder);
             handler.accept(ingestDocumentWrappers);
         }, exception -> { updateWithExceptions(ingestDocumentWrappers, handler, exception); });
     }
 
-    private void batchExecuteHandler(
-        List<?> results,
-        List<IngestDocumentWrapper> ingestDocumentWrappers,
-        List<DataForInference> dataForInferences,
-        Map<Integer, Integer> originalOrder,
-        Consumer<List<IngestDocumentWrapper>> handler
-    ) {
+    protected void batchExecuteHandler(List<?> results, List<DataForInference> dataForInferences, Map<Integer, Integer> originalOrder) {
         int startIndex = 0;
         results = restoreToOriginalOrder(results, originalOrder);
         for (DataForInference dataForInference : dataForInferences) {
@@ -252,7 +245,7 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
         }
     }
 
-    private Tuple<List<String>, Map<Integer, Integer>> sortByLengthAndReturnOriginalOrder(List<String> inferenceList) {
+    protected Tuple<List<String>, Map<Integer, Integer>> sortByLengthAndReturnOriginalOrder(List<String> inferenceList) {
         List<Tuple<Integer, String>> docsWithIndex = new ArrayList<>();
         for (int i = 0; i < inferenceList.size(); ++i) {
             docsWithIndex.add(Tuple.tuple(i, inferenceList.get(i)));
@@ -358,7 +351,7 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
                 buildNestedMap(originalKey, targetKey, sourceAndMetadataMap, treeRes);
                 mapWithProcessorKeys.put(originalKey, treeRes.get(originalKey));
             } else {
-                mapWithProcessorKeys.put(String.valueOf(targetKey), sourceAndMetadataMap.get(originalKey));
+                mapWithProcessorKeys.put(String.valueOf(targetKey), normalizeSourceValue(sourceAndMetadataMap.get(originalKey)));
             }
         }
         return mapWithProcessorKeys;
@@ -383,21 +376,22 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
                 }
             } else if (sourceAndMetadataMap.get(parentKey) instanceof List) {
                 for (Map.Entry<String, Object> nestedFieldMapEntry : ((Map<String, Object>) processorKey).entrySet()) {
-                    List<Map<String, Object>> list = (List<Map<String, Object>>) sourceAndMetadataMap.get(parentKey);
+                    List<Map<String, Object>> nestedSourceList = (List<Map<String, Object>>) sourceAndMetadataMap.get(parentKey);
                     Pair<String, Object> processedNestedKey = processNestedKey(nestedFieldMapEntry);
-                    List<Object> listOfStrings = list.stream().map(x -> {
-                        Object nestedSourceValue = x.get(processedNestedKey.getKey());
-                        return normalizeSourceValue(nestedSourceValue);
-                    }).collect(Collectors.toList());
-                    Map<String, Object> map = new LinkedHashMap<>();
-                    map.put(processedNestedKey.getKey(), listOfStrings);
-                    buildNestedMap(processedNestedKey.getKey(), processedNestedKey.getValue(), map, next);
+                    List<Object> listOfStrings = nestedSourceList.stream()
+                        .map(nestedSourceItem -> nestedSourceItem.get(processedNestedKey.getKey()))
+                        .map(this::normalizeSourceValue)
+                        .collect(Collectors.toList());
+                    Map<String, Object> nestedMap = new LinkedHashMap<>();
+                    nestedMap.put(processedNestedKey.getKey(), listOfStrings);
+                    buildNestedMap(processedNestedKey.getKey(), processedNestedKey.getValue(), nestedMap, next);
                 }
             }
             treeRes.merge(parentKey, next, REMAPPING_FUNCTION);
         } else {
+            Object parentValue = sourceAndMetadataMap.get(parentKey);
             String key = String.valueOf(processorKey);
-            treeRes.put(key, sourceAndMetadataMap.get(parentKey));
+            treeRes.put(key, normalizeSourceValue(parentValue));
         }
     }
 
@@ -442,7 +436,7 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
             indexName,
             clusterService,
             environment,
-            false
+            true
         );
     }
 
@@ -786,8 +780,16 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
         List<String> inferenceList,
         BiConsumer<IngestDocument, Exception> handler
     ) {
+        // Set PASSAGE content type for document ingestion.
+        // For asymmetric models: MLCommonsClientAccessor will use this to create AsymmetricTextEmbeddingParameters
+        // For symmetric models: MLCommonsClientAccessor will ignore this and pass null parameters
+        // This avoids an extra model lookup here since MLCommonsClientAccessor caches model asymmetry status
         mlCommonsClientAccessor.inferenceSentences(
-            TextInferenceRequest.builder().modelId(this.modelId).inputTexts(inferenceList).build(),
+            TextInferenceRequest.builder()
+                .modelId(this.modelId)
+                .inputTexts(inferenceList)
+                .embeddingContentType(EmbeddingContentType.PASSAGE)
+                .build(),
             ActionListener.wrap(vectors -> {
                 setVectorFieldsToDocument(ingestDocument, processMap, vectors);
                 handler.accept(ingestDocument, null);
@@ -812,10 +814,16 @@ public abstract class InferenceProcessor extends AbstractBatchingProcessor {
         List<String> inferenceList,
         PruneType pruneType,
         float pruneRatio,
+        MLAlgoParams mlAlgoParams,
         BiConsumer<IngestDocument, Exception> handler
     ) {
         mlCommonsClientAccessor.inferenceSentencesWithMapResult(
-            TextInferenceRequest.builder().modelId(this.modelId).inputTexts(inferenceList).build(),
+            TextInferenceRequest.builder()
+                .modelId(this.modelId)
+                .inputTexts(inferenceList)
+                .mlAlgoParams(mlAlgoParams)
+                .embeddingContentType(PASSAGE)
+                .build(),
             ActionListener.wrap(resultMaps -> {
                 List<Map<String, Float>> sparseVectors = TokenWeightUtil.fetchListOfTokenWeightMap(resultMaps)
                     .stream()

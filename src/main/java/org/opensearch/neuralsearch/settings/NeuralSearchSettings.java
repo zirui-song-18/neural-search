@@ -18,7 +18,7 @@ import org.opensearch.core.common.unit.ByteSizeValue;
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class NeuralSearchSettings {
 
-    public static final String SPARSE_ALGO_PARAM_INDEX_THREAD_QTY = "neural.sparse.algo_param.index_thread_qty";
+    public static final String SPARSE_ALGO_PARAM_INDEX_THREAD_QTY = "plugins.neural_search.sparse.algo_param.index_thread_qty";
     public static final String NEURAL_CIRCUIT_BREAKER_NAME = "neural_search";
     public static final int DEFAULT_INDEX_THREAD_QTY = 1; // Choosing 1 as default value to protect safety
     public static final int MINIMUM_INDEX_THREAD_QTY = 1;
@@ -26,9 +26,9 @@ public final class NeuralSearchSettings {
 
     /**
      * Specifies the initial memory limit for the parent circuit breaker.
-     * Defaults to 50% of the JVM heap.
+     * Defaults to 10% of the JVM heap.
      */
-    private static final String DEFAULT_CIRCUIT_BREAKER_LIMIT = "50%";
+    private static final String DEFAULT_CIRCUIT_BREAKER_LIMIT = "10%";
     /**
      * A constant by which the neural data estimations are multiplied to determine the final estimation.
      * Default is 1.0 while minimum is 0.0.
@@ -83,16 +83,6 @@ public final class NeuralSearchSettings {
         Setting.Property.Dynamic
     );
 
-    /**
-     * Enables or disables agentic query clause
-     */
-    public static final Setting<Boolean> AGENTIC_SEARCH_ENABLED = Setting.boolSetting(
-        "plugins.neural_search.agentic_search_enabled",
-        false,
-        Setting.Property.NodeScope,
-        Setting.Property.Dynamic
-    );
-
     public static Setting<Integer> SPARSE_ALGO_PARAM_INDEX_THREAD_QTY_SETTING = Setting.intSetting(
         SPARSE_ALGO_PARAM_INDEX_THREAD_QTY,
         DEFAULT_INDEX_THREAD_QTY,
@@ -114,7 +104,7 @@ public final class NeuralSearchSettings {
     );
 
     /**
-     * The memory limit for neural circuit breaker. Default is 50% of the JVM heap.
+     * The memory limit for neural circuit breaker. Default is 10% of the JVM heap.
      */
     public static final Setting<ByteSizeValue> NEURAL_CIRCUIT_BREAKER_LIMIT = Setting.memorySizeSetting(
         "plugins.neural_search.circuit_breaker.limit",

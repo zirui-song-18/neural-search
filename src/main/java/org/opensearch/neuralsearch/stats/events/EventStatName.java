@@ -78,6 +78,13 @@ public enum EventStatName implements StatName {
         EventStatType.TIMESTAMPED_EVENT_COUNTER,
         Version.V_3_1_0
     ),
+    /** Counts semantic highlighting batch inference requests */
+    SEMANTIC_HIGHLIGHTING_BATCH_REQUEST_COUNT(
+        "semantic_highlighting_batch_request_count",
+        "semantic_highlighting",
+        EventStatType.TIMESTAMPED_EVENT_COUNTER,
+        Version.V_3_3_0
+    ),
     /** Tracks executions of the normalization processor */
     NORMALIZATION_PROCESSOR_EXECUTIONS(
         "normalization_processor_executions",
@@ -88,9 +95,16 @@ public enum EventStatName implements StatName {
     /** Tracks executions of the agentic query translator processor */
     AGENTIC_QUERY_TRANSLATOR_PROCESSOR_EXECUTIONS(
         "agentic_query_translator_executions",
-        "processors.search",
+        "processors.search.agentic",
         EventStatType.TIMESTAMPED_EVENT_COUNTER,
         Version.V_3_2_0
+    ),
+    /** Tracks executions of the agentic context processor */
+    AGENTIC_CONTEXT_PROCESSOR_EXECUTIONS(
+        "agentic_context_executions",
+        "processors.search.agentic",
+        EventStatType.TIMESTAMPED_EVENT_COUNTER,
+        Version.V_3_3_0
     ),
     /** Tracks L2 normalization technique executions */
     NORM_TECHNIQUE_L2_EXECUTIONS(
@@ -240,7 +254,17 @@ public enum EventStatName implements StatName {
     RERANK_ML_PROCESSOR_EXECUTIONS("rerank_ml_executions", "processors.search", EventStatType.TIMESTAMPED_EVENT_COUNTER, Version.V_3_1_0),
 
     /** Counts agentic query requests */
-    AGENTIC_QUERY_REQUESTS("agentic_query_requests", "query.agentic", EventStatType.TIMESTAMPED_EVENT_COUNTER, Version.V_3_2_0),;
+    AGENTIC_QUERY_REQUESTS("agentic_query_requests", "query.agentic", EventStatType.TIMESTAMPED_EVENT_COUNTER, Version.V_3_2_0),
+
+    /** Counts seismic query requests */
+    SEISMIC_QUERY_REQUESTS("seismic_query_requests", "query.neural_sparse", EventStatType.TIMESTAMPED_EVENT_COUNTER, Version.V_3_3_0),
+    /** Tracks executions of the mmr neural query transformer */
+    MMR_NEURAL_QUERY_TRANSFORMER(
+        "mmr_neural_query_transformer_executions",
+        "processors.search",
+        EventStatType.TIMESTAMPED_EVENT_COUNTER,
+        Version.V_3_3_0
+    );
 
     private final String nameString;
     private final String path;

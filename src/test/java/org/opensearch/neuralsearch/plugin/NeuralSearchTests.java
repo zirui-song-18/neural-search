@@ -40,6 +40,7 @@ import org.opensearch.neuralsearch.processor.NeuralQueryEnricherProcessor;
 import org.opensearch.neuralsearch.processor.NeuralSparseTwoPhaseProcessor;
 import org.opensearch.neuralsearch.processor.NormalizationProcessor;
 import org.opensearch.neuralsearch.processor.RRFProcessor;
+import org.opensearch.neuralsearch.processor.AgenticContextResponseProcessor;
 import org.opensearch.neuralsearch.processor.SparseEncodingProcessor;
 import org.opensearch.neuralsearch.processor.TextEmbeddingProcessor;
 import org.opensearch.neuralsearch.processor.AgenticQueryTranslatorProcessor;
@@ -55,7 +56,7 @@ import org.opensearch.neuralsearch.settings.NeuralSearchSettings;
 import org.opensearch.neuralsearch.sparse.algorithm.ClusterTrainingExecutor;
 import org.opensearch.neuralsearch.sparse.cache.CircuitBreakerManager;
 import org.opensearch.neuralsearch.sparse.common.SparseConstants;
-import org.opensearch.neuralsearch.sparse.mapper.SparseTokensFieldMapper;
+import org.opensearch.neuralsearch.sparse.mapper.SparseVectorFieldMapper;
 import org.opensearch.neuralsearch.sparse.SparseIndexEventListener;
 import org.opensearch.neuralsearch.sparse.SparseSettings;
 import org.opensearch.index.IndexModule;
@@ -121,7 +122,6 @@ public class NeuralSearchTests extends OpenSearchQueryTestCase {
             settings,
             Set.of(
                 NeuralSearchSettings.NEURAL_STATS_ENABLED,
-                NeuralSearchSettings.AGENTIC_SEARCH_ENABLED,
                 NeuralSearchSettings.NEURAL_CIRCUIT_BREAKER_LIMIT,
                 NeuralSearchSettings.NEURAL_CIRCUIT_BREAKER_OVERHEAD,
                 NeuralSearchSettings.SPARSE_ALGO_PARAM_INDEX_THREAD_QTY_SETTING
@@ -199,7 +199,7 @@ public class NeuralSearchTests extends OpenSearchQueryTestCase {
 
     public void testGetSettings() {
         List<Setting<?>> settings = plugin.getSettings();
-        assertEquals(9, settings.size());
+        assertEquals(8, settings.size());
     }
 
     public void testRequestProcessors() {
@@ -216,12 +216,13 @@ public class NeuralSearchTests extends OpenSearchQueryTestCase {
         Map<String, Factory<SearchResponseProcessor>> processors = plugin.getResponseProcessors(searchParameters);
         assertNotNull(processors);
         assertNotNull(processors.get(RerankProcessor.TYPE));
+        assertNotNull(processors.get(AgenticContextResponseProcessor.TYPE));
     }
 
     public void testSearchExts() {
         List<SearchExtSpec<?>> searchExts = plugin.getSearchExts();
 
-        assertEquals(1, searchExts.size());
+        assertEquals(2, searchExts.size());
     }
 
     public void testExecutionBuilders() {
@@ -239,7 +240,7 @@ public class NeuralSearchTests extends OpenSearchQueryTestCase {
     public void testGetMappers_shouldReturnMappers() {
         final Map<String, Mapper.TypeParser> typeParserMap = plugin.getMappers();
         assertEquals(2, typeParserMap.size());
-        assertTrue(typeParserMap.get(SparseTokensFieldMapper.CONTENT_TYPE) instanceof SparseTokensFieldMapper.SparseTypeParser);
+        assertTrue(typeParserMap.get(SparseVectorFieldMapper.CONTENT_TYPE) instanceof SparseVectorFieldMapper.SparseTypeParser);
         assertTrue(typeParserMap.get(SemanticFieldMapper.CONTENT_TYPE) instanceof SemanticFieldMapper.TypeParser);
     }
 

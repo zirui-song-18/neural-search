@@ -17,11 +17,12 @@ import org.opensearch.neuralsearch.settings.NeuralSearchSettings;
 import org.opensearch.neuralsearch.sparse.cache.CacheKey;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+
+import static org.opensearch.neuralsearch.stats.metrics.MemoryStat.BYTES_PER_KILOBYTES;
 
 /**
  * Integration tests for memory stats related features for Seismic algorithm
@@ -47,37 +48,21 @@ public class SparseMemoryStatsIT extends SparseBaseIT {
     @SneakyThrows
     public void tearDown() {
         disableStats();
-        updateClusterSettings(NeuralSearchSettings.NEURAL_CIRCUIT_BREAKER_LIMIT.getKey(), "50%");
+        updateClusterSettings(NeuralSearchSettings.NEURAL_CIRCUIT_BREAKER_LIMIT.getKey(), "10%");
         super.tearDown();
     }
 
     @SneakyThrows
     public void testMemoryStatsIncreaseWithSeismic() {
-        // Create Sparse Index
-        int docCount = 100;
-        createSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, 100, 0.4f, 0.1f, docCount);
-
-        // Verify index exists
-        assertTrue(indexExists(TEST_INDEX_NAME));
-
         // Fetch original memory stats
         List<Double> originalSparseMemoryUsageStats = getSparseMemoryUsageStatsAcrossNodes();
         List<Long> originalCircuitBreakerMemoryStats = getNeuralCircuitBreakerMemoryStatsAcrossNodes();
         verityMemoryStatsAlign(originalSparseMemoryUsageStats, originalCircuitBreakerMemoryStats);
 
-        // Ingest documents
-        List<Map<String, Float>> docs = new ArrayList<>();
-        for (int i = 0; i < docCount; ++i) {
-            Map<String, Float> tokens = new HashMap<>();
-            tokens.put("1000", randomFloat());
-            tokens.put("2000", randomFloat());
-            tokens.put("3000", randomFloat());
-            tokens.put("4000", randomFloat());
-            tokens.put("5000", randomFloat());
-            docs.add(tokens);
-        }
-
-        ingestDocumentsAndForceMerge(TEST_INDEX_NAME, TEST_TEXT_FIELD_NAME, TEST_SPARSE_FIELD_NAME, docs);
+        // Create Sparse Index
+        prepareSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME);
+        // Verify index exists
+        assertTrue(indexExists(TEST_INDEX_NAME));
 
         // Verify memory stats increase after ingesting documents
         List<Double> currentSparseMemoryUsageStats = getSparseMemoryUsageStatsAcrossNodes();
@@ -110,8 +95,11 @@ public class SparseMemoryStatsIT extends SparseBaseIT {
         List<Long> originalCircuitBreakerMemoryStats = getNeuralCircuitBreakerMemoryStatsAcrossNodes();
         verityMemoryStatsAlign(originalSparseMemoryUsageStats, originalCircuitBreakerMemoryStats);
 
+        int shards = 3;
+        int replicas = getEffectiveReplicaCount(3);
+
         // Create Sparse Index
-        prepareMultiShardReplicasIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME);
+        prepareMultiShardReplicasIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME, shards, replicas);
 
         // Verify memory stats increase after ingesting documents
         List<Double> currentSparseMemoryUsageStats = getSparseMemoryUsageStatsAcrossNodes();
@@ -174,32 +162,16 @@ public class SparseMemoryStatsIT extends SparseBaseIT {
     public void testMemoryStatsIncreaseMinimalSizeWithZeroCircuitBreakerLimit() {
         // Disable cache by setting neural circuit breaker limit to zero
         updateClusterSettings(NeuralSearchSettings.NEURAL_CIRCUIT_BREAKER_LIMIT.getKey(), "0%");
-
-        // Create Sparse Index
-        int docCount = 100;
-        createSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, 100, 0.4f, 0.1f, docCount);
-
-        // Verify index exists
-        assertTrue(indexExists(TEST_INDEX_NAME));
-
         // Fetch original memory stats
         List<Double> originalSparseMemoryUsageStats = getSparseMemoryUsageStatsAcrossNodes();
         List<Long> originalCircuitBreakerMemoryStats = getNeuralCircuitBreakerMemoryStatsAcrossNodes();
         verityMemoryStatsAlign(originalSparseMemoryUsageStats, originalCircuitBreakerMemoryStats);
 
-        // Ingest documents
-        List<Map<String, Float>> docs = new ArrayList<>();
-        for (int i = 0; i < docCount; ++i) {
-            Map<String, Float> tokens = new HashMap<>();
-            tokens.put("1000", randomFloat());
-            tokens.put("2000", randomFloat());
-            tokens.put("3000", randomFloat());
-            tokens.put("4000", randomFloat());
-            tokens.put("5000", randomFloat());
-            docs.add(tokens);
-        }
-
-        ingestDocumentsAndForceMerge(TEST_INDEX_NAME, TEST_TEXT_FIELD_NAME, TEST_SPARSE_FIELD_NAME, docs);
+        // Create Sparse Index
+        int docCount = 100;
+        prepareSparseIndex(TEST_INDEX_NAME, TEST_SPARSE_FIELD_NAME, TEST_TEXT_FIELD_NAME);
+        // Verify index exists
+        assertTrue(indexExists(TEST_INDEX_NAME));
 
         // Verify memory stats only increase by cache registry size
         List<Double> currentSparseMemoryUsageStats = getSparseMemoryUsageStatsAcrossNodes();
@@ -216,7 +188,7 @@ public class SparseMemoryStatsIT extends SparseBaseIT {
             .alignObjectSize((long) docCount * RamUsageEstimator.NUM_BYTES_OBJECT_REF);
         long emptyClusteredPostingSize = RamUsageEstimator.shallowSizeOf(new ConcurrentHashMap<>());
 
-        double expectedSize = (cacheKeySize * 2 + emptyClusteredPostingSize + emptyForwardIndexSize) / 1024.0d;
+        double expectedSize = (double) (cacheKeySize * 2 + emptyClusteredPostingSize + emptyForwardIndexSize) / BYTES_PER_KILOBYTES;
 
         assertEquals(expectedSize, currentSparseMemoryUsageSum - originalSparseMemoryUsageSum, DELTA_FOR_MEMORY_STATS_ASSERTION);
         verityMemoryStatsAlign(currentSparseMemoryUsageStats, currentCircuitBreakerMemoryStats);
@@ -253,7 +225,7 @@ public class SparseMemoryStatsIT extends SparseBaseIT {
     private void verityMemoryStatsAlign(List<Double> memoryUsageStats, List<Long> circuitBreakerStats) {
         assertEquals(memoryUsageStats.size(), circuitBreakerStats.size());
         for (int i = 0; i < memoryUsageStats.size(); ++i) {
-            double circuitBreakerKbSize = circuitBreakerStats.get(i) / 1024.0d;
+            double circuitBreakerKbSize = (double) circuitBreakerStats.get(i) / BYTES_PER_KILOBYTES;
             assertEquals(memoryUsageStats.get(i), circuitBreakerKbSize, DELTA_FOR_MEMORY_STATS_ASSERTION);
         }
     }

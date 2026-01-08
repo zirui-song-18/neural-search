@@ -13,29 +13,23 @@ import org.opensearch.neuralsearch.util.TestUtils;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.common.xcontent.XContentType;
-import org.opensearch.neuralsearch.settings.NeuralSearchSettingsAccessor;
 
 import java.io.IOException;
 import java.util.List;
 import java.util.Arrays;
 
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
 
     private static final String QUERY_TEXT = "Find me red car";
     private static final List<String> QUERY_FIELDS = Arrays.asList("title", "description");
-
-    private NeuralSearchSettingsAccessor mockSettingsAccessor;
+    private static final String MEMORY_ID = "test-memory-123";
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
         TestUtils.initializeEventStatsManager();
-        mockSettingsAccessor = mock(NeuralSearchSettingsAccessor.class);
-        when(mockSettingsAccessor.isAgenticSearchEnabled()).thenReturn(true);
-        AgenticSearchQueryBuilder.initialize(mockSettingsAccessor);
     }
 
     public void testBuilder_withRequiredFields() {
@@ -47,11 +41,14 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
     }
 
     public void testBuilder_withAllFields() {
-        AgenticSearchQueryBuilder queryBuilder = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT).queryFields(QUERY_FIELDS);
+        AgenticSearchQueryBuilder queryBuilder = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT)
+            .queryFields(QUERY_FIELDS)
+            .memoryId(MEMORY_ID);
 
         assertNotNull("Query builder should not be null", queryBuilder);
         assertEquals("Query text should match", QUERY_TEXT, queryBuilder.getQueryText());
         assertEquals("Fields should match", QUERY_FIELDS, queryBuilder.getQueryFields());
+        assertEquals("Memory ID should match", MEMORY_ID, queryBuilder.getMemoryId());
     }
 
     public void testFromXContent_withRequiredFields() throws IOException {
@@ -67,7 +64,15 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
     }
 
     public void testFromXContent_withAllFields() throws IOException {
-        String json = "{\n" + "  \"query_text\": \"" + QUERY_TEXT + "\",\n" + "  \"query_fields\": [\"title\", \"description\"]\n" + "}";
+        String json = "{\n"
+            + "  \"query_text\": \""
+            + QUERY_TEXT
+            + "\",\n"
+            + "  \"query_fields\": [\"title\", \"description\"],\n"
+            + "  \"memory_id\": \""
+            + MEMORY_ID
+            + "\"\n"
+            + "}";
 
         XContentParser parser = XContentType.JSON.xContent().createParser(xContentRegistry(), null, json);
         parser.nextToken();
@@ -77,6 +82,7 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
         assertNotNull("Query builder should not be null", queryBuilder);
         assertEquals("Query text should match", QUERY_TEXT, queryBuilder.getQueryText());
         assertEquals("Fields should match", QUERY_FIELDS, queryBuilder.getQueryFields());
+        assertEquals("Memory ID should match", MEMORY_ID, queryBuilder.getMemoryId());
     }
 
     public void testFromXContent_missingQueryText() throws IOException {
@@ -159,9 +165,6 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
     }
 
     public void testDoRewrite_returnsThis() throws IOException {
-        NeuralSearchSettingsAccessor mockSettingsAccessor = mock(NeuralSearchSettingsAccessor.class);
-        when(mockSettingsAccessor.isAgenticSearchEnabled()).thenReturn(true);
-        AgenticSearchQueryBuilder.initialize(mockSettingsAccessor);
 
         AgenticSearchQueryBuilder queryBuilder = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT);
         QueryRewriteContext mockContext = mock(QueryRewriteContext.class);
@@ -171,12 +174,20 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
     }
 
     public void testEquals() {
-        AgenticSearchQueryBuilder builder1 = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT).queryFields(QUERY_FIELDS);
-
-        AgenticSearchQueryBuilder builder2 = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT).queryFields(QUERY_FIELDS);
+        AgenticSearchQueryBuilder builder1 = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT)
+            .queryFields(QUERY_FIELDS)
+            .memoryId(MEMORY_ID);
+        AgenticSearchQueryBuilder builder2 = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT)
+            .queryFields(QUERY_FIELDS)
+            .memoryId(MEMORY_ID);
+        AgenticSearchQueryBuilder builder3 = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT)
+            .queryFields(QUERY_FIELDS)
+            .memoryId("different-memory");
 
         assertEquals(builder1, builder2);
         assertEquals(builder1.hashCode(), builder2.hashCode());
+        assertNotEquals(builder1, builder3);
+        assertNotEquals(builder1.hashCode(), builder3.hashCode());
     }
 
     public void testNotEquals() {
@@ -188,7 +199,9 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
     }
 
     public void testSerialization() throws IOException {
-        AgenticSearchQueryBuilder original = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT).queryFields(QUERY_FIELDS);
+        AgenticSearchQueryBuilder original = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT)
+            .queryFields(QUERY_FIELDS)
+            .memoryId(MEMORY_ID);
 
         BytesStreamOutput output = new BytesStreamOutput();
         original.writeTo(output);
@@ -199,6 +212,7 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
         assertEquals(original, deserialized);
         assertEquals(QUERY_TEXT, deserialized.getQueryText());
         assertEquals(QUERY_FIELDS, deserialized.getQueryFields());
+        assertEquals(MEMORY_ID, deserialized.getMemoryId());
     }
 
     public void testFieldName() {
@@ -278,5 +292,36 @@ public class AgenticSearchQueryBuilderTests extends OpenSearchTestCase {
         AgenticSearchQueryBuilder queryBuilder = AgenticSearchQueryBuilder.fromXContent(parser);
 
         assertEquals(validQuery, queryBuilder.getQueryText());
+    }
+
+    public void testSerialization_withNullMemoryId() throws IOException {
+        AgenticSearchQueryBuilder original = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT).queryFields(QUERY_FIELDS);
+
+        BytesStreamOutput output = new BytesStreamOutput();
+        original.writeTo(output);
+
+        StreamInput input = output.bytes().streamInput();
+        AgenticSearchQueryBuilder deserialized = new AgenticSearchQueryBuilder(input);
+
+        assertEquals(original, deserialized);
+        assertEquals(QUERY_TEXT, deserialized.getQueryText());
+        assertEquals(QUERY_FIELDS, deserialized.getQueryFields());
+        assertNull(deserialized.getMemoryId());
+    }
+
+    public void testGetMemoryId_defaultNull() {
+        AgenticSearchQueryBuilder queryBuilder = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT);
+        assertNull("Memory ID should be null by default", queryBuilder.getMemoryId());
+    }
+
+    public void testDoToQuery_withAgentFailureReason() throws IOException {
+        AgenticSearchQueryBuilder queryBuilder = new AgenticSearchQueryBuilder().queryText(QUERY_TEXT);
+        String failureReason = "Agent execution failed";
+        queryBuilder.setAgentFailureReason(failureReason);
+
+        QueryShardContext mockContext = mock(QueryShardContext.class);
+
+        IllegalStateException exception = expectThrows(IllegalStateException.class, () -> queryBuilder.doToQuery(mockContext));
+        assertEquals("Should throw agent failure exception", "Agentic search failed: " + failureReason, exception.getMessage());
     }
 }

@@ -46,11 +46,16 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.Version;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.MappingMetadata;
+import org.opensearch.cluster.metadata.Metadata;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.mapper.ContentPath;
 import org.opensearch.neuralsearch.sparse.codec.SparseBinaryDocValuesPassThrough;
 import org.opensearch.neuralsearch.sparse.common.SparseConstants;
-import org.opensearch.neuralsearch.sparse.mapper.SparseTokensField;
+import org.opensearch.neuralsearch.sparse.mapper.SparseVectorField;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -58,10 +63,12 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
 import static org.apache.lucene.tests.util.LuceneTestCase.random;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -472,7 +479,7 @@ public class TestsPrepareUtils {
         sparseFieldType.setDocValuesType(DocValuesType.BINARY);
 
         // Add required attributes for sparse field
-        sparseFieldType.putAttribute(SparseTokensField.SPARSE_FIELD, "true");
+        sparseFieldType.putAttribute(SparseVectorField.SPARSE_FIELD, "true");
         sparseFieldType.putAttribute(SparseConstants.APPROXIMATE_THRESHOLD_FIELD, "10");
         sparseFieldType.freeze();
 
@@ -507,7 +514,7 @@ public class TestsPrepareUtils {
                             if (original != null && field.equals("sparse_field")) {
                                 // Wrap with SparseBinaryDocValuesPassThrough for sparse fields
                                 SegmentInfo segmentInfo = prepareSegmentInfo();
-                                return new SparseBinaryDocValuesPassThrough(original, segmentInfo);
+                                return new SparseBinaryDocValuesPassThrough(original, segmentInfo, prepareKeyFieldInfo());
                             }
                             return original;
                         }
@@ -534,6 +541,44 @@ public class TestsPrepareUtils {
         @Override
         public CacheHelper getReaderCacheHelper() {
             return in.getReaderCacheHelper();
+        }
+    }
+
+    public static Map<String, Object> createFieldMappingProperties(boolean isSeismicField, List<String> sparseFields) {
+        Map<String, Object> properties = new HashMap<>();
+        Map<String, Object> sparseFieldMapping = new HashMap<>();
+        for (String sparseField : sparseFields) {
+            Map<String, Object> sparseFieldProperties = new HashMap<>();
+            sparseFieldProperties.put("type", isSeismicField ? "sparse_vector" : "rank_features");
+
+            sparseFieldMapping.put(sparseField, sparseFieldProperties);
+        }
+        properties.put("properties", sparseFieldMapping);
+        return properties;
+    }
+
+    public static void prepareSparseFieldUtilsClusterServiceMock(
+        ClusterService mockClusterService,
+        List<String> sparseFields,
+        Settings additionalSettings
+    ) {
+        IndexMetadata indexMetadata = mock(IndexMetadata.class);
+        Metadata metadata = mock(Metadata.class);
+        ClusterState clusterState = mock(ClusterState.class);
+        MappingMetadata mappingMetadata = new MappingMetadata("_doc", createFieldMappingProperties(true, sparseFields));
+
+        when(mockClusterService.state()).thenReturn(clusterState);
+        when(clusterState.metadata()).thenReturn(metadata);
+        when(metadata.index(anyString())).thenReturn(indexMetadata);
+
+        when(indexMetadata.mapping()).thenReturn(mappingMetadata);
+
+        if (additionalSettings == null) {
+            Settings settings = Settings.builder().put("index.sparse", true).build();
+            when(indexMetadata.getSettings()).thenReturn(settings);
+        } else {
+            Settings settings = Settings.builder().put("index.sparse", true).put(additionalSettings).build();
+            when(indexMetadata.getSettings()).thenReturn(settings);
         }
     }
 }
